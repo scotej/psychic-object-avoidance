@@ -1,1 +1,2 @@
 opencv-contrib-python>=4.9
+reportlab>=4.0
