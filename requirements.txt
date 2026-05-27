@@ -1,2 +1,4 @@
 opencv-contrib-python>=4.9
 reportlab>=4.0
+codrone-edu>=2.8
+numpy>=2.0
