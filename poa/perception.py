@@ -39,19 +39,22 @@ def detect_workspace(
     raw_bgr: np.ndarray,
     detector: cv2.aruco.ArucoDetector,
     cfg: Config,
-) -> Optional[WorkspaceFrame]:
+) -> tuple[Optional[WorkspaceFrame], list[int]]:
     """Detect the 4 corner markers and warp the raw frame to a top-down
-    workspace image. Returns None if any expected marker ID is missing."""
+    workspace image. Returns (frame, visible_ids). `frame` is None if any
+    expected marker ID is missing; `visible_ids` lists every marker ID
+    detected this frame (useful for the debug banner)."""
     corners_list, ids, _ = detector.detectMarkers(raw_bgr)
+    visible_ids: list[int] = ids.flatten().tolist() if ids is not None else []
     if ids is None:
-        return None
+        return None, visible_ids
 
     centers: dict[int, tuple[float, float]] = {}
-    for mid, corners in zip(ids.flatten().tolist(), corners_list):
+    for mid, corners in zip(visible_ids, corners_list):
         if mid in CORNER_IDS:
             centers[mid] = _marker_center(corners)
     if any(mid not in centers for mid in CORNER_IDS):
-        return None
+        return None, visible_ids
 
     src = np.array([centers[mid] for mid in CORNER_IDS], dtype=np.float32)
     w_px, h_px = cfg.workspace.width_px, cfg.workspace.height_px
@@ -61,7 +64,10 @@ def detect_workspace(
     )
     H = cv2.getPerspectiveTransform(src, dst)
     rectified = cv2.warpPerspective(raw_bgr, H, (w_px, h_px))
-    return WorkspaceFrame(homography=H, rectified=rectified, raw_marker_centers=centers)
+    return (
+        WorkspaceFrame(homography=H, rectified=rectified, raw_marker_centers=centers),
+        visible_ids,
+    )
 
 
 def build_mask(hsv: np.ndarray, target: ColorTarget) -> np.ndarray:

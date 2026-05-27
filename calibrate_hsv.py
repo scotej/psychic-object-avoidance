@@ -163,7 +163,7 @@ def main() -> None:
         name, target, defaulter = targets[target_ix]
         _apply_trackbars(target, _pull_trackbars(WINDOW))
 
-        ws = detect_workspace(frame, detector, cfg)
+        ws, _visible_ids = detect_workspace(frame, detector, cfg)
         if ws is not None:
             base = ws.rectified
             base_label = "workspace (rectified)"

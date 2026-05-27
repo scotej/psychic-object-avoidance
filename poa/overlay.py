@@ -99,19 +99,30 @@ def build_overlay(
     fps: float,
     state: str,
     extras: Optional[list[str]] = None,
+    raw_bgr: Optional[np.ndarray] = None,
+    detected_marker_ids: Optional[list[int]] = None,
 ) -> np.ndarray:
-    """Compose the full debug frame. `base_bgr` is the rectified workspace
-    image (or None if the workspace wasn't detected)."""
-    if base_bgr is None:
-        img = np.zeros((cfg.workspace.height_px, cfg.workspace.width_px, 3), dtype=np.uint8)
-        cv2.putText(img, "NO WORKSPACE", (40, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 3, cv2.LINE_AA)
-        cv2.putText(img, "Need all 4 ArUco markers in frame", (40, 130),
+    """Compose the debug frame. Falls back to `raw_bgr` with a banner when
+    the workspace isn't detected so the operator can still see the camera."""
+    if base_bgr is not None:
+        img = draw_perception(base_bgr, det, cfg) if det is not None else base_bgr.copy()
+    elif raw_bgr is not None:
+        img = raw_bgr.copy()
+        h, w = img.shape[:2]
+        banner_y = h - 60
+        cv2.rectangle(img, (0, banner_y - 30), (w, h), (0, 0, 0), -1)
+        cv2.putText(img, "NO WORKSPACE - showing raw camera",
+                    (16, banner_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
-    elif det is not None:
-        img = draw_perception(base_bgr, det, cfg)
+        found = sorted(detected_marker_ids) if detected_marker_ids else []
+        cv2.putText(img,
+                    f"markers seen: {found}   need all of [0, 1, 2, 3]",
+                    (16, banner_y + 26),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1, cv2.LINE_AA)
     else:
-        img = base_bgr.copy()
+        img = np.zeros((cfg.workspace.height_px, cfg.workspace.width_px, 3), dtype=np.uint8)
+        cv2.putText(img, "NO CAMERA", (40, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 3, cv2.LINE_AA)
 
     lines = [f"{fps:5.1f} FPS   state: {state}"]
     if det is not None:

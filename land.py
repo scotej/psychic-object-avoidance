@@ -114,7 +114,7 @@ def main() -> None:
                 inst = 1.0 / dt
                 fps = 0.9 * fps + 0.1 * inst if fps > 0 else inst
 
-                ws = detect_workspace(frame, detector, cfg)
+                ws, visible_ids = detect_workspace(frame, detector, cfg)
                 det = None
                 ctrl = None
                 base = None
@@ -170,7 +170,10 @@ def main() -> None:
                     state = "DONE"
                     extras.append("LANDED")
 
-                display = build_overlay(base, det, ctrl, cfg, fps, state, extras=extras)
+                display = build_overlay(
+                    base, det, ctrl, cfg, fps, state,
+                    extras=extras, raw_bgr=frame, detected_marker_ids=visible_ids,
+                )
                 display = fit_to_screen(display, max_dim=900)
                 cv2.imshow(WINDOW, display)
 

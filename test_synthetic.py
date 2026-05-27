@@ -83,8 +83,8 @@ def main() -> int:
     cfg = Config()
     detector = make_aruco_detector()
 
-    ws = detect_workspace(raw, detector, cfg)
-    assert ws is not None, "workspace not detected (ArUco failure)"
+    ws, visible_ids = detect_workspace(raw, detector, cfg)
+    assert ws is not None, f"workspace not detected (ArUco failure, visible_ids={visible_ids})"
     print(f"[ok] workspace detected, marker centers: "
           f"{ {k: (round(x, 1), round(y, 1)) for k, (x, y) in ws.raw_marker_centers.items()} }")
 
