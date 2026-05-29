@@ -1,37 +1,40 @@
 # Psychic Object Avoidance — CoDrone Vision-Guided Landing
 
-Vision-guided autonomous landing for a CoDrone EDU using an overhead iPhone camera. The system finds the drone (by its onboard LED color), finds a blue landing pad, and commands the drone toward the pad in real time. A live overlay window shows the rectified workspace for debugging and tuning.
+Vision-guided autonomous landing for a CoDrone EDU using an overhead iPhone camera. Everything is found by ArUco marker: four markers bound the workspace, one marker rides on the drone (giving both its position and its heading), and one marker on the floor is the landing pad. The system commands the drone toward the pad in real time, and a single live overlay window shows the rectified workspace for debugging and tuning.
 
 ## System Overview
 
-One overhead iPhone camera looks straight down at the workspace. Four ArUco markers (one per corner) define the world frame so the workspace is rectified to a known coordinate system on every frame — that way camera bumps, drift, or remounts don't break the geometry, and pixel positions map cleanly to a fixed mm-scale world.
+One overhead iPhone camera looks straight down at a small workspace — roughly 30 × 30 cm. Four ArUco markers (one per corner) define the world frame, so the workspace is rectified to a known coordinate system on every frame; that way camera bumps, drift, or remounts don't break the geometry, and pixel positions map cleanly to a fixed mm-scale world.
 
-Within the rectified frame:
-- The **drone** is located by detecting its **LED color** (configurable HSV range).
-- The **landing pad** is located by detecting **blue**.
-- A **controller** converts `(drone_pos, pad_pos)` → CoDrone flight commands and closes the loop until the drone is over the pad and can descend.
+Every object is an ArUco marker from the same dictionary, so there is no colour calibration to drift:
+- The four **corner** markers (IDs 0–3) define the workspace.
+- The **drone** marker (ID 4) is stuck on top of the drone with its top edge pointing at the nose. Detecting it gives the drone's position *and* its heading from the marker's corner geometry.
+- The **pad** marker (ID 5) lies on the floor and is the landing target.
+- A **controller** converts `(drone_pose, pad_pos)` → CoDrone flight commands and closes the loop until the drone is over the pad and can descend.
 
 ## Hardware
 - **Drone:** CoDrone EDU
 - **Camera:** iPhone, mounted overhead, looking straight down
-- **Workspace markers:** 4× printed ArUco markers (one per corner)
-- **Drone marker:** the drone's onboard LED (color chosen to be distinctive against the floor)
-- **Landing target:** a blue physical landing pad on the floor
+- **Workspace markers:** 4× printed ArUco markers (one per corner), centres ~30 cm apart
+- **Drone marker:** a 30 mm ArUco marker (ID 4) on top of the drone, top edge aligned with the nose
+- **Landing target:** a 30 mm ArUco marker (ID 5) on the floor
 
 ## Per-Frame Pipeline (target ~15–30 Hz)
 1. Grab frame from iPhone camera.
-2. Detect the 4 ArUco markers → compute homography → rectify the workspace to a known mm/px scale.
-3. Detect the drone LED color blob → drone `(x, y)` in workspace coordinates.
-4. Detect the blue pad blob → pad `(x, y)` in workspace coordinates.
-5. Controller: `error = pad - drone` → roll / pitch / yaw / throttle command.
-6. Send command to the CoDrone via `codrone-edu`.
-7. Draw the overlay (markers, drone, pad, error vector, FPS) and display.
+2. Detect every ArUco marker in one pass on the raw frame.
+3. From the 4 corner markers → compute homography → rectify the workspace to a known mm/px scale.
+4. Push the drone marker through the homography → drone `(x, y)` + heading in workspace coordinates.
+5. Push the pad marker through the homography → pad `(x, y)` in workspace coordinates.
+6. Controller: `error = pad - drone`, rotated into the drone's body frame → roll / pitch / yaw / throttle command.
+7. Send command to the CoDrone via `codrone-edu`.
+8. Draw the single overlay (markers, heading arrow, error vector, FPS) and display.
 
 ## Recommended Open Source Stack
 
 ### Core CV / control
-- **OpenCV** — `pip install opencv-contrib-python`. Provides `cv2.aruco` (marker detection), `cv2.findHomography` / `cv2.warpPerspective` (rectification), HSV color segmentation, contour finding, and overlay drawing. The `contrib` build is required for `cv2.aruco`.
+- **OpenCV** — `pip install opencv-contrib-python`. Provides `cv2.aruco` (marker detection + generation), `cv2.getPerspectiveTransform` / `cv2.warpPerspective` (rectification), `cv2.perspectiveTransform` (mapping marker corners into the workspace), and overlay drawing. The `contrib` build is required for `cv2.aruco`.
 - **NumPy** — array math, coordinate transforms.
+- **reportlab** — lays the printable marker PDF out at an exact physical size (see `generate_markers.py`).
 
 ### Drone control
 - **codrone-edu** — `pip install codrone-edu`. Official Python SDK for the CoDrone EDU. Gives you `Drone()` with `pair()`, `takeoff()`, `set_pitch()`, `set_roll()`, `set_throttle()`, `set_yaw()`, `move()`, `land()`, plus telemetry.
@@ -47,20 +50,20 @@ Goal: make `cv2.VideoCapture(...)` return iPhone frames so the rest of the pipel
 Start with Iriun; only escalate if latency or wireless requirements force it.
 
 ### Optional / later
-- **Ultralytics YOLOv8** — drop in if classical HSV blob detection turns out to be too brittle (reflections, ambient light changes) and you want a learned detector for the drone and pad.
+- **Ultralytics YOLOv8** — drop in if marker detection turns out to be too brittle (motion blur, glare, marker occlusion) and you want a learned detector for the drone and pad.
 - **Stable-Baselines3 + Gymnasium** — for an actually-learned controller instead of a hand-tuned PID. Wrap perception + drone as a Gym env; train in sim or a digital twin first.
 - **Flask or FastAPI + MJPEG endpoint** — if you want the live overlay viewable from a phone or browser instead of a local `cv2.imshow` window.
 - **PyQt / Dear PyGui** — if the live feed grows into a real control panel with tuning sliders, telemetry plots, start/stop buttons.
 
 ## Suggested Milestones
-1. **Camera in.** iPhone → Iriun → `cv2.VideoCapture` → `cv2.imshow`. Confirm a stable frame stream.
-2. **Workspace rectification.** Print 4 ArUco markers, lay them at the corners, compute and continuously visualize the rectified workspace.
-3. **Detect the drone.** LED color → blob → `(x, y)` drawn on the overlay. Build a small HSV calibration script with trackbars.
-4. **Detect the pad.** Same approach for blue, drawn on the overlay.
+1. **Camera in.** iPhone → Iriun → `cv2.VideoCapture` → `cv2.imshow`. Confirm a stable frame stream (`iriun_preview.py`).
+2. **Markers out.** Print the markers from `generate_markers.py`, lay the four corners ~30 cm apart, stick ID 4 on the drone (arrow to the nose) and drop ID 5 on the floor.
+3. **Workspace rectification.** Detect the four corners, compute the homography, and continuously visualize the rectified workspace.
+4. **Detect the drone + pad.** Push markers 4 and 5 through the homography → positions + heading drawn on the overlay (`test_synthetic.py` checks this without hardware).
 5. **CoDrone hello-world.** Connect, takeoff, hover, land via `codrone-edu` — no vision yet.
-6. **Closed-loop landing.** Wire perception → simple proportional controller → drone. Hard safety `land()` on detection loss.
-7. **Polish + tune.** Overlay shows error vector, command vector, FPS; HSV thresholds tunable from sliders.
-8. *(stretch)* Swap classical CV for YOLO, or hand-tuned PID for RL.
+6. **Closed-loop landing.** Wire perception → proportional controller → drone (`land.py`). Hard safety `land()` on detection loss.
+7. **Polish + tune.** Overlay shows the heading arrow, error vector, command vector, and FPS; tune the controller gains in `poa/config.py`.
+8. *(stretch)* Swap ArUco for a learned detector (YOLO), or the hand-tuned controller for RL.
 
 ## Safety Notes
 - Hard-code an emergency `land()` on: detection loss for more than N consecutive frames, drone leaving workspace bounds, keyboard interrupt.

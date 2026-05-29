@@ -1,7 +1,8 @@
 """
-Debug visualization. Draws perception, control state, and status text on
-top of the rectified workspace image so the operator can see what the
-controller is seeing in real time.
+Debug visualization. Draws the perception and control state on top of the
+rectified workspace so the operator can see what the controller is seeing in
+real time. Everything goes into a single composed image — there is only ever
+one window.
 """
 
 from __future__ import annotations
@@ -11,9 +12,9 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from .config import Config
+from .config import CORNER_IDS, Config
 from .controller import ControlOutput
-from .perception import Detection
+from .perception import Detection, Marker
 
 
 def _mm_to_px(xy_mm: tuple[float, float], px_per_mm: float) -> tuple[int, int]:
@@ -27,7 +28,7 @@ def _format_xy(xy: Optional[tuple[float, float]]) -> str:
 
 
 def draw_status_panel(img: np.ndarray, lines: list[str]) -> None:
-    """Translucent dark panel + monospace-ish status text at top-left."""
+    """Translucent dark panel + status text at the top-left."""
     if not lines:
         return
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -49,43 +50,43 @@ def draw_status_panel(img: np.ndarray, lines: list[str]) -> None:
         cv2.putText(img, s, (pad, y), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
 
 
-def draw_perception(
-    base_bgr: np.ndarray,
-    det: Detection,
-    cfg: Config,
-) -> np.ndarray:
+def _draw_marker(img: np.ndarray, marker: Marker, px_per_mm: float,
+                 color: tuple[int, int, int], label: str) -> None:
+    poly = np.array([_mm_to_px((x, y), px_per_mm) for x, y in marker.corners_mm],
+                    dtype=np.int32)
+    cv2.polylines(img, [poly], isClosed=True, color=color, thickness=2, lineType=cv2.LINE_AA)
+    cx, cy = _mm_to_px(marker.center_mm, px_per_mm)
+    cv2.putText(img, label, (cx + 8, cy - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                color, 1, cv2.LINE_AA)
+
+
+def draw_perception(base_bgr: np.ndarray, det: Detection, cfg: Config) -> np.ndarray:
     img = base_bgr.copy()
     px = cfg.workspace.px_per_mm
 
-    # Landing pad: yellow X + tolerance ring
-    if det.pad_xy_mm is not None:
-        cx, cy = _mm_to_px(det.pad_xy_mm, px)
+    # Landing pad: yellow outline, tilted cross, tolerance ring.
+    if det.pad is not None:
+        _draw_marker(img, det.pad, px, (0, 255, 255), f"pad #{det.pad.id}")
+        cx, cy = _mm_to_px(det.pad.center_mm, px)
         cv2.circle(img, (cx, cy), int(round(cfg.controller.land_tolerance_mm * px)),
                    (0, 200, 200), 1, cv2.LINE_AA)
-        cv2.drawMarker(img, (cx, cy), (0, 255, 255),
-                       cv2.MARKER_TILTED_CROSS, 28, 3, cv2.LINE_AA)
+        cv2.drawMarker(img, (cx, cy), (0, 255, 255), cv2.MARKER_TILTED_CROSS, 22, 2, cv2.LINE_AA)
 
-    # Red rotor blobs
-    for r in det.rotors_xy_mm:
-        rx, ry = _mm_to_px(r, px)
-        cv2.circle(img, (rx, ry), 8, (0, 0, 255), 2, cv2.LINE_AA)
+    # Drone: green outline + heading arrow out the nose.
+    if det.drone is not None:
+        _draw_marker(img, det.drone, px, (0, 255, 0), f"drone #{det.drone.id}")
+        cx, cy = _mm_to_px(det.drone.center_mm, px)
+        fx, fy = det.drone.forward
+        arrow_mm = 45.0
+        tip = _mm_to_px((det.drone.center_mm[0] + fx * arrow_mm,
+                         det.drone.center_mm[1] + fy * arrow_mm), px)
+        cv2.arrowedLine(img, (cx, cy), tip, (0, 255, 0), 2, cv2.LINE_AA, tipLength=0.3)
 
-    # Drone LED + heading arrow
-    if det.led_xy_mm is not None:
-        lx, ly = _mm_to_px(det.led_xy_mm, px)
-        cv2.circle(img, (lx, ly), 12, (0, 255, 0), 2, cv2.LINE_AA)
-        if det.nose_mm is not None:
-            nx, ny = _mm_to_px(det.nose_mm, px)
-            cv2.arrowedLine(img, (lx, ly), (nx, ny), (0, 255, 0), 2,
-                            cv2.LINE_AA, tipLength=0.3)
-
-    # Error vector: thin grey line drone -> pad
+    # Error vector: thin grey line from drone to pad.
     if det.have_drone and det.have_pad:
-        a = _mm_to_px(det.led_xy_mm, px)
-        b = _mm_to_px(det.pad_xy_mm, px)
-        cv2.line(img, a, b, (200, 200, 200), 1, cv2.LINE_AA)
+        cv2.line(img, _mm_to_px(det.drone.center_mm, px),
+                 _mm_to_px(det.pad.center_mm, px), (200, 200, 200), 1, cv2.LINE_AA)
 
-    # Workspace border
     h, w = img.shape[:2]
     cv2.rectangle(img, (0, 0), (w - 1, h - 1), (80, 80, 80), 1)
     return img
@@ -102,8 +103,8 @@ def build_overlay(
     raw_bgr: Optional[np.ndarray] = None,
     detected_marker_ids: Optional[list[int]] = None,
 ) -> np.ndarray:
-    """Compose the debug frame. Falls back to `raw_bgr` with a banner when
-    the workspace isn't detected so the operator can still see the camera."""
+    """Compose the debug frame. Falls back to the raw camera with a banner when
+    the workspace isn't detected, so the operator can still aim the camera."""
     if base_bgr is not None:
         img = draw_perception(base_bgr, det, cfg) if det is not None else base_bgr.copy()
     elif raw_bgr is not None:
@@ -111,25 +112,25 @@ def build_overlay(
         h, w = img.shape[:2]
         banner_y = h - 60
         cv2.rectangle(img, (0, banner_y - 30), (w, h), (0, 0, 0), -1)
-        cv2.putText(img, "NO WORKSPACE - showing raw camera",
-                    (16, banner_y),
+        cv2.putText(img, "NO WORKSPACE - showing raw camera", (16, banner_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
         found = sorted(detected_marker_ids) if detected_marker_ids else []
-        cv2.putText(img,
-                    f"markers seen: {found}   need all of [0, 1, 2, 3]",
-                    (16, banner_y + 26),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(img, f"markers seen: {found}   need all of {list(CORNER_IDS)}",
+                    (16, banner_y + 26), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                    (0, 255, 255), 1, cv2.LINE_AA)
     else:
         img = np.zeros((cfg.workspace.height_px, cfg.workspace.width_px, 3), dtype=np.uint8)
-        cv2.putText(img, "NO CAMERA", (40, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 3, cv2.LINE_AA)
+        cv2.putText(img, "NO CAMERA", (40, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.4,
+                    (0, 0, 255), 3, cv2.LINE_AA)
 
     lines = [f"{fps:5.1f} FPS   state: {state}"]
     if det is not None:
-        lines.append(f"led    : {_format_xy(det.led_xy_mm)} mm")
-        lines.append(f"pad    : {_format_xy(det.pad_xy_mm)} mm")
-        lines.append(f"rotors : {len(det.rotors_xy_mm)}  heading: "
-                     f"{('%+.2f, %+.2f' % det.heading) if det.heading else '   -  ,   -  '}")
+        drone_xy = det.drone.center_mm if det.drone else None
+        pad_xy = det.pad.center_mm if det.pad else None
+        heading = det.drone.forward if det.drone else None
+        lines.append(f"drone  : {_format_xy(drone_xy)} mm   "
+                     f"head: {('%+.2f, %+.2f' % heading) if heading else '   -  ,   -  '}")
+        lines.append(f"pad    : {_format_xy(pad_xy)} mm")
     if ctrl is not None:
         if ctrl.distance_mm is not None:
             ef = ctrl.error_body_mm

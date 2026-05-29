@@ -1,15 +1,14 @@
 """
 Closed-loop landing controller.
 
-Converts (drone position, drone heading, pad position) in world mm into
-CoDrone EDU roll/pitch commands in the drone body frame, with:
-  - deadband (no command when within deadband_mm of the pad center)
-  - saturation (commands capped at +/- max_command)
-  - "over pad" dwell detection (used by land.py to decide when to land())
+Turns the drone marker and the pad marker into CoDrone EDU roll/pitch commands
+in the drone's own body frame, with a deadband near the pad, saturation on the
+output, and an "over the pad" dwell counter that land.py uses to decide when to
+actually descend.
 
-World frame: image-style axes (+x right, +y down) in millimeters.
-Body frame: forward = heading vector; right = heading rotated 90 deg CW on
-screen, i.e. (-fy, fx) — the drone's right wing in world axes.
+World frame: image-style axes, +x right and +y down, in millimetres.
+Body frame: forward = the drone's heading (its marker's top edge); right = that
+heading turned 90 deg clockwise on screen, i.e. (-fy, fx) — the right wing.
 """
 
 from __future__ import annotations
@@ -25,8 +24,8 @@ from .perception import Detection
 class Command:
     roll: int = 0      # CoDrone: + right, - left
     pitch: int = 0     # CoDrone: + forward, - backward
-    yaw: int = 0       # + clockwise, - counterclockwise (we keep 0)
-    throttle: int = 0  # + climb, - descend (we keep 0; drone holds altitude)
+    yaw: int = 0       # + clockwise, - counterclockwise (we hold 0)
+    throttle: int = 0  # + climb, - descend (we hold 0; the drone keeps its altitude)
 
     @property
     def is_zero(self) -> bool:
@@ -36,10 +35,10 @@ class Command:
 @dataclass
 class ControlOutput:
     command: Command
-    error_world_mm: Optional[tuple[float, float]]   # pad - drone, in world frame
-    error_body_mm: Optional[tuple[float, float]]    # (forward, right), in body frame
+    error_world_mm: Optional[tuple[float, float]]   # pad - drone, world frame
+    error_body_mm: Optional[tuple[float, float]]    # (forward, right), body frame
     distance_mm: Optional[float]
-    over_pad: bool                                  # within tolerance for required dwell
+    over_pad: bool                                  # within tolerance for the required dwell
 
 
 class LandingController:
@@ -56,13 +55,13 @@ class LandingController:
             self._over_pad_streak = 0
             return ControlOutput(cmd, None, None, None, False)
 
-        # det.have_drone => led_xy_mm and heading are not None
-        ex = det.pad_xy_mm[0] - det.led_xy_mm[0]
-        ey = det.pad_xy_mm[1] - det.led_xy_mm[1]
-        fx, fy = det.heading
+        dx, dy = det.drone.center_mm
+        px, py = det.pad.center_mm
+        fx, fy = det.drone.forward
+        ex, ey = px - dx, py - dy
 
-        forward = ex * fx + ey * fy        # body +x (drone's nose direction)
-        right = -ex * fy + ey * fx         # body +y (drone's right wing)
+        forward = ex * fx + ey * fy        # body +x (toward the nose)
+        right = -ex * fy + ey * fx         # body +y (toward the right wing)
         distance = (forward * forward + right * right) ** 0.5
 
         if distance <= self.cfg.land_tolerance_mm:
@@ -73,10 +72,8 @@ class LandingController:
 
         if distance > self.cfg.deadband_mm:
             mx = self.cfg.max_command
-            pitch_f = max(-mx, min(mx, self.cfg.kp_xy * forward))
-            roll_f = max(-mx, min(mx, self.cfg.kp_xy * right))
-            cmd.pitch = int(round(pitch_f))
-            cmd.roll = int(round(roll_f))
+            cmd.pitch = int(round(max(-mx, min(mx, self.cfg.kp_xy * forward))))
+            cmd.roll = int(round(max(-mx, min(mx, self.cfg.kp_xy * right))))
 
         return ControlOutput(
             command=cmd,

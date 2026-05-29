@@ -1,21 +1,26 @@
 """
-Per-frame perception: workspace rectification + color-blob detection.
+Per-frame perception: find the markers, rectify the workspace, and report the
+drone and the pad in workspace millimetres.
 
-The workspace is defined by the centers of the 4 corner ArUco markers; we
-build a homography from those centers to a known mm-scale rectangle and warp
-the raw frame into a top-down view. Color detection then runs on the
-rectified image so positions come out in workspace millimeters.
+It all happens in a single detection pass on the raw frame. The four corner
+markers give us a homography from camera pixels to a flat top-down workspace;
+the drone and pad markers are then pushed through that same homography, so
+their positions (and the drone's heading) come out directly in workspace mm.
+
+We detect on the raw frame rather than on the warped image on purpose: warping
+first throws away resolution and smears the marker borders, which hurts both
+detection and the corner accuracy the heading depends on.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import cv2
 import numpy as np
 
-from .config import CORNER_IDS, ColorTarget, Config
+from .config import CORNER_IDS, DRONE_ID, PAD_ID, Config
 
 
 def make_aruco_detector() -> cv2.aruco.ArucoDetector:
@@ -24,134 +29,101 @@ def make_aruco_detector() -> cv2.aruco.ArucoDetector:
 
 
 @dataclass
-class WorkspaceFrame:
-    homography: np.ndarray
-    rectified: np.ndarray
-    raw_marker_centers: dict[int, tuple[float, float]]
+class Marker:
+    """A detected marker, expressed in workspace millimetres."""
+    id: int
+    corners_mm: np.ndarray            # (4, 2); ArUco order TL, TR, BR, BL
+    center_mm: tuple[float, float]
+    forward: tuple[float, float]      # unit vector; the marker's top edge is "forward"
 
 
-def _marker_center(corners: np.ndarray) -> tuple[float, float]:
-    pts = corners.reshape(-1, 2)
-    return float(pts[:, 0].mean()), float(pts[:, 1].mean())
-
-
-def detect_workspace(
-    raw_bgr: np.ndarray,
-    detector: cv2.aruco.ArucoDetector,
-    cfg: Config,
-) -> tuple[Optional[WorkspaceFrame], list[int]]:
-    """Detect the 4 corner markers and warp the raw frame to a top-down
-    workspace image. Returns (frame, visible_ids). `frame` is None if any
-    expected marker ID is missing; `visible_ids` lists every marker ID
-    detected this frame (useful for the debug banner)."""
-    corners_list, ids, _ = detector.detectMarkers(raw_bgr)
-    visible_ids: list[int] = ids.flatten().tolist() if ids is not None else []
-    if ids is None:
-        return None, visible_ids
-
-    centers: dict[int, tuple[float, float]] = {}
-    for mid, corners in zip(visible_ids, corners_list):
-        if mid in CORNER_IDS:
-            centers[mid] = _marker_center(corners)
-    if any(mid not in centers for mid in CORNER_IDS):
-        return None, visible_ids
-
-    src = np.array([centers[mid] for mid in CORNER_IDS], dtype=np.float32)
-    w_px, h_px = cfg.workspace.width_px, cfg.workspace.height_px
-    dst = np.array(
-        [[0, 0], [w_px - 1, 0], [w_px - 1, h_px - 1], [0, h_px - 1]],
-        dtype=np.float32,
-    )
-    H = cv2.getPerspectiveTransform(src, dst)
-    rectified = cv2.warpPerspective(raw_bgr, H, (w_px, h_px))
-    return (
-        WorkspaceFrame(homography=H, rectified=rectified, raw_marker_centers=centers),
-        visible_ids,
-    )
-
-
-def build_mask(hsv: np.ndarray, target: ColorTarget) -> np.ndarray:
-    """OR together every HSVRange in the target, then morphologically clean."""
-    mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-    for r in target.ranges:
-        mask = cv2.bitwise_or(mask, cv2.inRange(hsv, r.lo(), r.hi()))
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    return mask
-
-
-def find_blobs(mask: np.ndarray, target: ColorTarget) -> list[tuple[float, float, float]]:
-    """Return [(cx_px, cy_px, area_px)] for the N=expected_blobs biggest
-    blobs that exceed min_area_px, ordered by area descending."""
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    blobs: list[tuple[float, float, float]] = []
-    for c in contours:
-        area = cv2.contourArea(c)
-        if area < target.min_area_px:
-            continue
-        M = cv2.moments(c)
-        if M["m00"] <= 0:
-            continue
-        cx = M["m10"] / M["m00"]
-        cy = M["m01"] / M["m00"]
-        blobs.append((cx, cy, area))
-    blobs.sort(key=lambda b: b[2], reverse=True)
-    return blobs[: target.expected_blobs]
+@dataclass
+class WorkspaceView:
+    rectified: np.ndarray                            # top-down BGR, width_px x height_px
+    homography: np.ndarray                           # raw px -> rectified px
+    corner_centers: dict[int, tuple[float, float]]   # raw px, for debugging
 
 
 @dataclass
 class Detection:
-    led_xy_mm: Optional[tuple[float, float]] = None          # drone position (LED centroid)
-    rotors_xy_mm: list[tuple[float, float]] = field(default_factory=list)  # 0/1/2 red blobs
-    pad_xy_mm: Optional[tuple[float, float]] = None          # landing target
-    nose_mm: Optional[tuple[float, float]] = None            # midpoint of the two rotors
-    heading: Optional[tuple[float, float]] = None            # unit vector LED -> nose (world frame)
+    drone: Optional[Marker] = None
+    pad: Optional[Marker] = None
 
     @property
     def have_drone(self) -> bool:
-        return self.led_xy_mm is not None and self.heading is not None
+        return self.drone is not None
 
     @property
     def have_pad(self) -> bool:
-        return self.pad_xy_mm is not None
+        return self.pad is not None
 
 
-def detect_in_workspace(
-    rectified_bgr: np.ndarray,
-    cfg: Config,
-) -> tuple[Detection, dict[str, np.ndarray]]:
-    """Run all 3 color detections on a rectified workspace image."""
-    hsv = cv2.cvtColor(rectified_bgr, cv2.COLOR_BGR2HSV)
-    px_per_mm = cfg.workspace.px_per_mm
+def _detect_all(raw_bgr: np.ndarray,
+                detector: cv2.aruco.ArucoDetector) -> tuple[dict[int, np.ndarray], list[int]]:
+    """Return {id: (4, 2) raw-pixel corners} plus the sorted list of visible IDs."""
+    corners_list, ids, _ = detector.detectMarkers(raw_bgr)
+    if ids is None:
+        return {}, []
+    found = {int(i): c.reshape(4, 2) for i, c in zip(ids.flatten(), corners_list)}
+    return found, sorted(found)
 
-    def to_mm(xy_px: tuple[float, float]) -> tuple[float, float]:
-        return xy_px[0] / px_per_mm, xy_px[1] / px_per_mm
 
-    masks: dict[str, np.ndarray] = {}
+def _center(corners: np.ndarray) -> tuple[float, float]:
+    return float(corners[:, 0].mean()), float(corners[:, 1].mean())
+
+
+def _to_workspace_marker(marker_id: int, raw_corners: np.ndarray,
+                         H: np.ndarray, px_per_mm: float) -> Marker:
+    """Push a marker's raw-pixel corners through the homography and into mm."""
+    pts = raw_corners.reshape(1, 4, 2).astype(np.float32)
+    corners_mm = cv2.perspectiveTransform(pts, H).reshape(4, 2) / px_per_mm
+    cx, cy = _center(corners_mm)
+
+    # ArUco corners come back as TL, TR, BR, BL, so the top edge spans 0->1 and
+    # the bottom edge spans 3->2. Forward is the direction the top edge faces.
+    top_mid = (corners_mm[0] + corners_mm[1]) / 2.0
+    bottom_mid = (corners_mm[2] + corners_mm[3]) / 2.0
+    fx, fy = float(top_mid[0] - bottom_mid[0]), float(top_mid[1] - bottom_mid[1])
+    norm = float(np.hypot(fx, fy))
+    forward = (fx / norm, fy / norm) if norm > 1e-6 else (0.0, -1.0)
+
+    return Marker(id=marker_id, corners_mm=corners_mm, center_mm=(cx, cy), forward=forward)
+
+
+def detect(raw_bgr: np.ndarray,
+           detector: cv2.aruco.ArucoDetector,
+           cfg: Config) -> tuple[Optional[WorkspaceView], Detection, list[int]]:
+    """Run the whole per-frame pipeline.
+
+    Returns (workspace, detection, visible_ids). `workspace` is None when any
+    corner marker is missing — without all four we can't rectify, so there is
+    nothing meaningful to track. `visible_ids` is every marker seen this frame,
+    which the overlay uses to tell the operator what's still missing.
+    """
+    markers, visible_ids = _detect_all(raw_bgr, detector)
+    if any(cid not in markers for cid in CORNER_IDS):
+        return None, Detection(), visible_ids
+
+    # Map the corner centres onto a (w_px, h_px) rectangle. We use w_px/h_px
+    # rather than w_px-1/h_px-1 so that one rectified pixel is exactly
+    # 1/px_per_mm of a millimetre — that keeps _to_workspace_marker's division
+    # by px_per_mm exact instead of off by a pixel.
+    src = np.array([_center(markers[cid]) for cid in CORNER_IDS], dtype=np.float32)
+    w_px, h_px = cfg.workspace.width_px, cfg.workspace.height_px
+    dst = np.array([[0, 0], [w_px, 0], [w_px, h_px], [0, h_px]], dtype=np.float32)
+    H = cv2.getPerspectiveTransform(src, dst)
+    rectified = cv2.warpPerspective(raw_bgr, H, (w_px, h_px))
+
     det = Detection()
+    px_per_mm = cfg.workspace.px_per_mm
+    if DRONE_ID in markers:
+        det.drone = _to_workspace_marker(DRONE_ID, markers[DRONE_ID], H, px_per_mm)
+    if PAD_ID in markers:
+        det.pad = _to_workspace_marker(PAD_ID, markers[PAD_ID], H, px_per_mm)
 
-    masks["led"] = build_mask(hsv, cfg.led)
-    led_blobs = find_blobs(masks["led"], cfg.led)
-    if led_blobs:
-        det.led_xy_mm = to_mm((led_blobs[0][0], led_blobs[0][1]))
-
-    masks["rotors"] = build_mask(hsv, cfg.rotors)
-    rot_blobs = find_blobs(masks["rotors"], cfg.rotors)
-    det.rotors_xy_mm = [to_mm((b[0], b[1])) for b in rot_blobs]
-
-    if len(det.rotors_xy_mm) == 2 and det.led_xy_mm is not None:
-        nx = (det.rotors_xy_mm[0][0] + det.rotors_xy_mm[1][0]) / 2
-        ny = (det.rotors_xy_mm[0][1] + det.rotors_xy_mm[1][1]) / 2
-        det.nose_mm = (nx, ny)
-        dx, dy = nx - det.led_xy_mm[0], ny - det.led_xy_mm[1]
-        norm = (dx * dx + dy * dy) ** 0.5
-        if norm > 1e-3:
-            det.heading = (dx / norm, dy / norm)
-
-    masks["pad"] = build_mask(hsv, cfg.pad)
-    pad_blobs = find_blobs(masks["pad"], cfg.pad)
-    if pad_blobs:
-        det.pad_xy_mm = to_mm((pad_blobs[0][0], pad_blobs[0][1]))
-
-    return det, masks
+    view = WorkspaceView(
+        rectified=rectified,
+        homography=H,
+        corner_centers={cid: _center(markers[cid]) for cid in CORNER_IDS},
+    )
+    return view, det, visible_ids
