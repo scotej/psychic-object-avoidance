@@ -108,11 +108,11 @@ def main() -> None:
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     read_fails += 1
-                    if drone.airborne:
+                    if drone.airborne and read_fails == 1:
                         drone.hover()
-                        if read_fails >= cfg.safety.max_consecutive_misses:
-                            land_now(f"camera stalled for {read_fails} frames -> landing")
-                            break
+                    if drone.airborne and read_fails >= cfg.safety.max_consecutive_misses:
+                        land_now(f"camera stalled for {read_fails} frames -> landing")
+                        break
                     if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
                         land_now("quit requested -> landing")
                         break
