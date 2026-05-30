@@ -29,6 +29,12 @@ class Command:
 
     @property
     def is_zero(self) -> bool:
+        """
+        Check whether all four command components are exactly zero.
+        
+        Returns:
+            True if `roll`, `pitch`, `yaw`, and `throttle` are all exactly 0, False otherwise.
+        """
         return self.roll == 0 and self.pitch == 0 and self.yaw == 0 and self.throttle == 0
 
 
@@ -50,6 +56,22 @@ class LandingController:
         self._over_pad_streak = 0
 
     def step(self, det: Detection) -> ControlOutput:
+        """
+        Convert a detection into a body-frame roll/pitch command with error metrics and an over-pad dwell flag.
+        
+        Computes the pad position relative to the drone, projects that world-frame error into the drone body-frame (forward, right), measures planar distance, updates an internal dwell counter that signals when the pad has remained within landing tolerance for enough frames, and produces roll/pitch commands using a proportional gain with a deadband and command saturation. Yaw and throttle are set from the controller configuration.
+        
+        Parameters:
+            det (Detection): Detection containing drone and pad observations; must provide drone.center_mm, pad.center_mm, and drone.forward.
+        
+        Returns:
+            ControlOutput: Contains:
+                - command: Command with roll/pitch (body-frame) plus configured yaw and throttle.
+                - error_world_mm: (px - dx, py - dy) in world/image axes.
+                - error_body_mm: (forward, right) components in the drone body frame.
+                - distance_mm: planar distance magnitude computed from body-frame components.
+                - over_pad: `True` when the pad has stayed within `cfg.land_tolerance_mm` for at least `cfg.land_dwell_frames`, `False` otherwise.
+        """
         cmd = Command(yaw=self.cfg.yaw_command, throttle=self.cfg.throttle_command)
         if not (det.have_drone and det.have_pad):
             self._over_pad_streak = 0

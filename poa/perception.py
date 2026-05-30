@@ -24,6 +24,12 @@ from .config import CORNER_IDS, DRONE_ID, PAD_ID, Config
 
 
 def make_aruco_detector() -> cv2.aruco.ArucoDetector:
+    """
+    Create an OpenCV ArUco detector configured for the 4x4-50 marker dictionary.
+    
+    Returns:
+        detector (cv2.aruco.ArucoDetector): An ArUco detector instance configured to detect markers from `cv2.aruco.DICT_4X4_50` using default detector parameters.
+    """
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     return cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters())
 
@@ -51,16 +57,34 @@ class Detection:
 
     @property
     def have_drone(self) -> bool:
+        """
+        Whether this detection includes a drone marker.
+        
+        Returns:
+            True if a drone marker is present, False otherwise.
+        """
         return self.drone is not None
 
     @property
     def have_pad(self) -> bool:
+        """
+        Indicates whether a pad marker was detected in this frame.
+        
+        Returns:
+            `true` if the `pad` attribute is present, `false` otherwise.
+        """
         return self.pad is not None
 
 
 def _detect_all(raw_bgr: np.ndarray,
                 detector: cv2.aruco.ArucoDetector) -> tuple[dict[int, np.ndarray], list[int]]:
-    """Return {id: (4, 2) raw-pixel corners} plus the sorted list of visible IDs."""
+    """
+                Map detected ArUco marker ids to their four corner pixel coordinates and return the sorted visible ids.
+                
+                Returns:
+                    markers (dict[int, np.ndarray]): Mapping from marker id to a (4, 2) array of corner coordinates in raw image pixels (corner order: TL, TR, BR, BL).
+                    visible_ids (list[int]): Sorted list of detected marker ids.
+                """
     corners_list, ids, _ = detector.detectMarkers(raw_bgr)
     if ids is None:
         return {}, []
@@ -69,12 +93,32 @@ def _detect_all(raw_bgr: np.ndarray,
 
 
 def _center(corners: np.ndarray) -> tuple[float, float]:
+    """
+    Compute the arithmetic center (mean x and mean y) of a set of 2D points.
+    
+    Parameters:
+        corners (np.ndarray): Array of shape (N, 2) containing point coordinates as (x, y).
+    
+    Returns:
+        center (tuple[float, float]): Tuple (mean_x, mean_y) of the averaged coordinates.
+    """
     return float(corners[:, 0].mean()), float(corners[:, 1].mean())
 
 
 def _to_workspace_marker(marker_id: int, raw_corners: np.ndarray,
                          H: np.ndarray, px_per_mm: float) -> Marker:
-    """Push a marker's raw-pixel corners through the homography and into mm."""
+    """
+                         Convert a detected ArUco marker's pixel corners into a Marker expressed in workspace millimetres with a normalized forward direction.
+                         
+                         Parameters:
+                             marker_id (int): ArUco marker id.
+                             raw_corners (np.ndarray): Marker corner coordinates in raw image pixels; expected shape (4, 2) in ArUco order TL, TR, BR, BL.
+                             H (np.ndarray): Homography that maps raw pixel coordinates to rectified pixel coordinates.
+                             px_per_mm (float): Scale factor: pixels per millimetre in the rectified workspace.
+                         
+                         Returns:
+                             Marker: A Marker whose `corners_mm` are the marker corners in workspace millimetres (TL, TR, BR, BL), `center_mm` is the (x, y) millimetre center, and `forward` is a unit 2D vector pointing toward the marker's top edge. If the top/bottom midpoint vector is degenerate, `forward` is set to (0.0, -1.0).
+                         """
     pts = raw_corners.reshape(1, 4, 2).astype(np.float32)
     corners_mm = cv2.perspectiveTransform(pts, H).reshape(4, 2) / px_per_mm
     cx, cy = _center(corners_mm)
@@ -93,13 +137,20 @@ def _to_workspace_marker(marker_id: int, raw_corners: np.ndarray,
 def detect(raw_bgr: np.ndarray,
            detector: cv2.aruco.ArucoDetector,
            cfg: Config) -> tuple[Optional[WorkspaceView], Detection, list[int]]:
-    """Run the whole per-frame pipeline.
-
-    Returns (workspace, detection, visible_ids). `workspace` is None when any
-    corner marker is missing — without all four we can't rectify, so there is
-    nothing meaningful to track. `visible_ids` is every marker seen this frame,
-    which the overlay uses to tell the operator what's still missing.
     """
+           Detect ArUco markers, rectify the workspace if all four corner markers are present, and return per-frame detections.
+           
+           Parameters:
+               raw_bgr (np.ndarray): Raw BGR camera frame.
+               detector (cv2.aruco.ArucoDetector): ArUco detector used to find markers in the frame.
+               cfg (Config): Configuration containing workspace dimensions and px_per_mm.
+           
+           Returns:
+               tuple[Optional[WorkspaceView], Detection, list[int]]: 
+                   - WorkspaceView or `None`: Rectified top-down view and homography when all corner markers are visible; `None` if any corner marker is missing.
+                   - Detection: Detected `drone` and `pad` markers converted into workspace millimetres (may have `None` fields if those markers are not visible).
+                   - list[int]: Sorted list of every marker id detected in the input frame.
+           """
     markers, visible_ids = _detect_all(raw_bgr, detector)
     if any(cid not in markers for cid in CORNER_IDS):
         return None, Detection(), visible_ids

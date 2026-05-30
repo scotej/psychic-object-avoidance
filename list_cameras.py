@@ -21,6 +21,11 @@ BACKENDS = [
 
 
 def main() -> None:
+    """
+    Probe available camera indices (0–7) for each configured backend and save one-frame PNG thumbnails.
+    
+    Creates an output directory "_tmp" if it does not exist, attempts to open each camera index with each backend from BACKENDS, captures a single frame when available, and writes thumbnails named "cam_{backend}_idx{index}.png" into that directory. Prints a status line for each opened camera and a short instruction telling the user how to use the discovered index with the application.
+    """
     out_dir = Path("_tmp")
     out_dir.mkdir(exist_ok=True)
 
