@@ -48,6 +48,21 @@ WINDOW = "land  (SPACE=takeoff  l=land  q=quit)"
 
 
 def parse_args() -> argparse.Namespace:
+    """
+    Parse command-line arguments for the landing application.
+    
+    Recognized options control camera selection, whether to disable sending commands to the drone,
+    workspace rectification dimensions/resolution, and the serial port for the CoDrone EDU.
+    
+    Returns:
+        argparse.Namespace: Namespace with the following attributes:
+            camera (int): Camera index to open.
+            no_fly (bool): If true, skip sending any drone commands (perception-only mode).
+            width_mm (float): Workspace width in millimeters (TL->TR marker centres).
+            height_mm (float): Workspace height in millimeters (TL->BL marker centres).
+            px_per_mm (float): Rectified workspace resolution in pixels per millimeter.
+            port (str | None): Serial port for the CoDrone EDU, or None to auto-detect.
+    """
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -68,6 +83,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_config(args: argparse.Namespace) -> Config:
+    """
+    Create a Config populated with workspace dimensions extracted from CLI arguments.
+    
+    Parameters:
+        args (argparse.Namespace): Parsed arguments expected to provide `width_mm`, `height_mm`, and `px_per_mm`.
+    
+    Returns:
+        Config: Configuration object whose `workspace.width_mm`, `workspace.height_mm`, and `workspace.px_per_mm` are set from `args`.
+    """
     cfg = Config()
     cfg.workspace.width_mm = args.width_mm
     cfg.workspace.height_mm = args.height_mm
@@ -76,6 +100,18 @@ def build_config(args: argparse.Namespace) -> Config:
 
 
 def main() -> None:
+    """
+    Run the vision-guided landing loop: open the camera, run per-frame ArUco detection, command the drone, and handle landing/termination.
+    
+    This function opens the configured camera, initializes the ArUco detector and landing controller, and enters a GUI loop that:
+    - rectifies frames into a workspace and detects drone/pad markers each frame;
+    - computes control commands when the workspace is available and sends them to the drone while tracking;
+    - manages a two-state flow (PREFLIGHT -> TRACKING) where takeoff is initiated by SPACE in PREFLIGHT when both markers are visible;
+    - triggers landing and stops the loop on any of: manual 'l' during TRACKING, 'q'/ESC quit, prolonged camera read failures, consecutive missing drone detections, sustained out-of-bounds drone position, or when the controller reports the drone is over the pad;
+    - displays an overlay showing detection, status, and FPS and responds to basic keyboard controls.
+    
+    Side effects: interacts with DroneIO (takeoff, hover, send commands, land), opens/releases the camera, and creates/destroys OpenCV windows.
+    """
     args = parse_args()
     cfg = build_config(args)
 
@@ -99,6 +135,14 @@ def main() -> None:
         # Landing is done inline rather than via a deferred state so it never
         # depends on the next (possibly failing) camera read happening.
         def land_now(reason: str) -> None:
+            """
+            Request immediate landing with a human-readable reason.
+            
+            Prints the provided reason and commands the connected drone to land if it is currently airborne.
+            
+            Parameters:
+                reason (str): Human-readable explanation for initiating the landing.
+            """
             print(f"[land] {reason}")
             if drone.airborne:
                 drone.land()

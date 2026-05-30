@@ -38,6 +38,12 @@ class Workspace:
 
     @property
     def width_px(self) -> int:
+        """
+        Compute the workspace width in pixels from `width_mm` and `px_per_mm`.
+        
+        Returns:
+            int: Width in pixels, rounded to the nearest integer.
+        """
         return int(round(self.width_mm * self.px_per_mm))
 
     @property

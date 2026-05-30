@@ -18,6 +18,16 @@ from .perception import Detection, Marker
 
 
 def _mm_to_px(xy_mm: tuple[float, float], px_per_mm: float) -> tuple[int, int]:
+    """
+    Convert a 2D position in millimeters to pixel coordinates by scaling and rounding.
+    
+    Parameters:
+        xy_mm (tuple[float, float]): (x, y) position in millimeters.
+        px_per_mm (float): Pixels per millimeter scale factor.
+    
+    Returns:
+        tuple[int, int]: (x_px, y_px) pixel coordinates obtained by multiplying each millimeter component by `px_per_mm` and rounding to the nearest integer.
+    """
     return int(round(xy_mm[0] * px_per_mm)), int(round(xy_mm[1] * px_per_mm))
 
 
@@ -28,7 +38,15 @@ def _format_xy(xy: Optional[tuple[float, float]]) -> str:
 
 
 def draw_status_panel(img: np.ndarray, lines: list[str]) -> None:
-    """Translucent dark panel + status text at the top-left."""
+    """
+    Draw a translucent dark panel in the image's top-left and render status lines over it.
+    
+    If `lines` is empty this function does nothing. The panel width is limited to the image width and its height is sized to fit the provided lines; each entry in `lines` is drawn as a separate text row. The function modifies `img` in place.
+    
+    Parameters:
+        img (np.ndarray): BGR image to draw onto; modified in place.
+        lines (list[str]): Ordered status text lines to render inside the panel.
+    """
     if not lines:
         return
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -52,7 +70,17 @@ def draw_status_panel(img: np.ndarray, lines: list[str]) -> None:
 
 def _draw_marker(img: np.ndarray, marker: Marker, px_per_mm: float,
                  color: tuple[int, int, int], label: str) -> None:
-    poly = np.array([_mm_to_px((x, y), px_per_mm) for x, y in marker.corners_mm],
+    """
+                 Draws a marker's polygon and label onto an image using the marker's millimeter coordinates.
+                 
+                 Parameters:
+                     img (np.ndarray): BGR image to draw on; modified in-place.
+                     marker (Marker): Marker object containing `corners_mm` (iterable of (x, y) in mm) and `center_mm` (x, y in mm).
+                     px_per_mm (float): Pixel scale factor: pixels per millimeter.
+                     color (tuple[int, int, int]): BGR color used for the polygon and text.
+                     label (str): Text label to render near the marker center.
+                 """
+                 poly = np.array([_mm_to_px((x, y), px_per_mm) for x, y in marker.corners_mm],
                     dtype=np.int32)
     cv2.polylines(img, [poly], isClosed=True, color=color, thickness=2, lineType=cv2.LINE_AA)
     cx, cy = _mm_to_px(marker.center_mm, px_per_mm)
@@ -61,6 +89,17 @@ def _draw_marker(img: np.ndarray, marker: Marker, px_per_mm: float,
 
 
 def draw_perception(base_bgr: np.ndarray, det: Detection, cfg: Config) -> np.ndarray:
+    """
+    Render detected landing pad and drone markers, tolerance/heading indicators, and a border onto a copy of the workspace image.
+    
+    Parameters:
+        base_bgr (np.ndarray): BGR workspace image to copy and draw overlays on.
+        det (Detection): Detection results containing optional `pad` and `drone` markers and presence flags.
+        cfg (Config): Configuration containing `workspace.px_per_mm` and `controller.land_tolerance_mm` used for scaling.
+    
+    Returns:
+        np.ndarray: A new BGR image with drawn pad/drone outlines, tolerance circle, heading arrow, error vector (if both present), and a perimeter border.
+    """
     img = base_bgr.copy()
     px = cfg.workspace.px_per_mm
 
@@ -103,8 +142,25 @@ def build_overlay(
     raw_bgr: Optional[np.ndarray] = None,
     detected_marker_ids: Optional[list[int]] = None,
 ) -> np.ndarray:
-    """Compose the debug frame. Falls back to the raw camera with a banner when
-    the workspace isn't detected, so the operator can still aim the camera."""
+    """
+    Compose a debug overlay image showing perception, control status, and runtime info.
+    
+    When a workspace frame (base_bgr) is provided this renders perception overlays (if det is present) or a copy of the workspace. If base_bgr is missing but raw_bgr is provided, the raw camera frame is used and a bottom banner indicates the missing workspace and which marker corner IDs were detected. Status lines (FPS, state, drone/pad positions, control commands, and any extras) are rendered in a translucent panel.
+    
+    Parameters:
+        base_bgr: Workspace image (BGR) to annotate; if None, raw_bgr or a blank canvas is used.
+        det: Detection data containing optional drone and pad markers; used to draw markers, centers, heading, and error vector.
+        ctrl: ControlOutput used to display distance, body-frame error, command values, and landing state.
+        cfg: Configuration providing workspace dimensions and scale (used when creating a blank fallback image).
+        fps: Current frames-per-second value shown in the status panel.
+        state: Short string describing the current system state shown in the status panel.
+        extras: Optional list of additional status lines to append to the status panel.
+        raw_bgr: Raw camera image (BGR) used as a fallback when base_bgr is not available; annotated with a banner.
+        detected_marker_ids: Optional list of detected marker IDs shown in the raw-camera banner.
+    
+    Returns:
+        img (np.ndarray): BGR image with composed overlays and status panel.
+    """
     if base_bgr is not None:
         img = draw_perception(base_bgr, det, cfg) if det is not None else base_bgr.copy()
     elif raw_bgr is not None:

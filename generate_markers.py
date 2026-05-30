@@ -57,6 +57,16 @@ class MarkerSpec:
 
 
 def build_specs(corner_size_mm: float, marker_size_mm: float) -> list[MarkerSpec]:
+    """
+    Builds the list of MarkerSpec objects for the four workspace corners, the drone marker, and the landing-pad marker.
+    
+    Parameters:
+        corner_size_mm (float): Side length in millimeters to assign to each workspace corner marker.
+        marker_size_mm (float): Side length in millimeters to assign to the drone and landing-pad markers.
+    
+    Returns:
+        list[MarkerSpec]: Six MarkerSpec instances in this order: the workspace corners (one per entry in CORNER_IDS/CORNER_NAMES, preserving their order), then the drone marker, then the landing-pad marker.
+    """
     specs = [
         MarkerSpec(
             id=cid,
@@ -88,14 +98,27 @@ def build_specs(corner_size_mm: float, marker_size_mm: float) -> list[MarkerSpec
 # --- bitmaps -------------------------------------------------------------
 
 def marker_bitmap(marker_id: int, side_px: int) -> np.ndarray:
-    """Bare marker, no quiet zone, as a grayscale array."""
+    """
+    Generate an ArUco marker image without a quiet zone.
+    
+    Parameters:
+        marker_id (int): ArUco marker identifier from the selected predefined dictionary.
+        side_px (int): Length of the marker image side in pixels.
+    
+    Returns:
+        marker (np.ndarray): Grayscale image array of shape (side_px, side_px) containing the marker bitmap.
+    """
     dictionary = cv2.aruco.getPredefinedDictionary(DICT_ID)
     return cv2.aruco.generateImageMarker(dictionary, marker_id, side_px)
 
 
 def marker_png(spec: MarkerSpec) -> np.ndarray:
-    """A printable BGR image: marker + white quiet zone, plus a FORWARD arrow
-    and 'this edge = nose' note for the drone marker."""
+    """
+    Create a printable BGR image containing the ArUco marker with a white quiet zone; optionally include a FORWARD arrow and caption for drone markers.
+    
+    Returns:
+        image (np.ndarray): BGR image array (dtype=uint8, 0–255) sized to include the marker, surrounding quiet zone, and an optional arrow/caption area.
+    """
     side_px = int(round(spec.size_mm * PX_PER_MM))
     quiet = side_px // 4
     arrow_zone = int(side_px * 0.6) if spec.forward_arrow else 0
@@ -122,6 +145,16 @@ def marker_png(spec: MarkerSpec) -> np.ndarray:
 
 
 def save_pngs(specs: list[MarkerSpec], png_dir: Path) -> None:
+    """
+    Write PNG files for each MarkerSpec into the given directory, creating the directory if it does not exist.
+    
+    Parameters:
+        specs (list[MarkerSpec]): Marker specifications to render and save as PNG files.
+        png_dir (Path): Destination directory for output PNG files; it will be created if missing.
+    
+    Raises:
+        RuntimeError: If writing any PNG file fails.
+    """
     png_dir.mkdir(parents=True, exist_ok=True)
     for spec in specs:
         path = png_dir / spec.png_name
@@ -133,6 +166,19 @@ def save_pngs(specs: list[MarkerSpec], png_dir: Path) -> None:
 # --- printable PDF -------------------------------------------------------
 
 def _png_bytes(spec: MarkerSpec, side_px: int) -> bytes:
+    """
+    Encode the raw ArUco marker bitmap for a spec into PNG bytes.
+    
+    Parameters:
+        spec (MarkerSpec): Marker specification whose `id` selects the ArUco marker.
+        side_px (int): Side length of the generated marker bitmap in pixels.
+    
+    Returns:
+        bytes: PNG-encoded bytes of the bare marker bitmap (no quiet zone or annotations).
+    
+    Raises:
+        RuntimeError: If PNG encoding fails.
+    """
     ok, buf = cv2.imencode(".png", marker_bitmap(spec.id, side_px))
     if not ok:
         raise RuntimeError(f"Failed to encode marker {spec.id}")
@@ -140,7 +186,21 @@ def _png_bytes(spec: MarkerSpec, side_px: int) -> bytes:
 
 
 def draw_scale_bar(c: canvas.Canvas, cx_mm: float, y_mm: float, length_mm: float = 100.0) -> None:
-    """Horizontal scale bar centred at cx_mm with ticks every 10 mm."""
+    """
+    Draws a horizontal scale bar in millimeters centered at the given x position on the PDF canvas.
+    
+    Parameters:
+        c (canvas.Canvas): ReportLab canvas to draw onto.
+        cx_mm (float): Center x-coordinate of the scale bar in millimeters.
+        y_mm (float): Vertical position of the scale bar baseline in millimeters.
+        length_mm (float): Total length of the scale bar in millimeters (defaults to 100.0).
+    
+    Behavior:
+        - Renders a horizontal line of length `length_mm` centered at `cx_mm`.
+        - Draws ticks every 10 mm; ticks at every 50 mm are taller.
+        - Places "0" at the left end and "`{length_mm} mm`" at the right end.
+        - Adds a centered caption indicating the bar should measure exactly `length_mm` mm on paper.
+    """
     x0, x1 = cx_mm - length_mm / 2, cx_mm + length_mm / 2
     c.setStrokeColorRGB(0, 0, 0)
     c.setLineWidth(0.6)
@@ -158,7 +218,15 @@ def draw_scale_bar(c: canvas.Canvas, cx_mm: float, y_mm: float, length_mm: float
 
 
 def _draw_forward_arrow(c: canvas.Canvas, cx_mm: float, base_y_mm: float, height_mm: float = 18.0) -> None:
-    """Upward arrow with a 'FORWARD' caption, drawn above the drone marker."""
+    """
+    Draws an upward-pointing arrow with a centered "FORWARD" caption above a marker on the PDF canvas.
+    
+    Parameters:
+        c (canvas.Canvas): ReportLab canvas to draw onto.
+        cx_mm (float): Horizontal center position of the arrow, in millimeters from the page origin.
+        base_y_mm (float): Vertical position (base) of the arrow shaft, in millimeters from the page origin.
+        height_mm (float): Vertical height of the arrow from base to tip, in millimeters (default 18.0).
+    """
     tip = base_y_mm + height_mm
     c.setStrokeColorRGB(0, 0, 0)
     c.setFillColorRGB(0, 0, 0)
@@ -175,6 +243,15 @@ def _draw_forward_arrow(c: canvas.Canvas, cx_mm: float, base_y_mm: float, height
 
 
 def draw_page(c: canvas.Canvas, spec: MarkerSpec) -> None:
+    """
+    Render a single A4 PDF page for the given marker specification and advance the canvas to a new page.
+    
+    Draws a centered title and subtitle, places the marker image at the specified physical size with a grey cut guide, optionally draws a "FORWARD" arrow above the marker, adds identifying text (ID, dictionary name and physical dimensions, placement note), draws a 100 mm scale bar, and calls showPage().
+    
+    Parameters:
+        c (reportlab.pdfgen.canvas.Canvas): Canvas to draw onto.
+        spec (MarkerSpec): Marker specification containing id, title, placement, size_mm, png_name, and forward_arrow flag.
+    """
     page_w = A4[0] / mm  # 210
     page_h = A4[1] / mm  # 297
 
@@ -215,6 +292,17 @@ def draw_page(c: canvas.Canvas, spec: MarkerSpec) -> None:
 
 
 def save_pdf(specs: list[MarkerSpec], out_path: Path) -> None:
+    """
+    Create an A4 PDF file containing one marker page per spec and write it to out_path.
+    
+    Ensures the output directory exists, creates a ReportLab A4 canvas (title and author metadata),
+    renders each MarkerSpec as a separate page via draw_page, saves the PDF to disk, and prints a completion line.
+    
+    Parameters:
+        specs (list[MarkerSpec]): Sequence of marker specifications; each entry becomes one PDF page.
+        out_path (Path): Filesystem path where the generated PDF will be written; parent directories
+            are created if they do not exist.
+    """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     c = canvas.Canvas(str(out_path), pagesize=A4)
     c.setTitle("Psychic Object Avoidance - ArUco markers")
@@ -226,6 +314,14 @@ def save_pdf(specs: list[MarkerSpec], out_path: Path) -> None:
 
 
 def main() -> None:
+    """
+    Parse CLI arguments, validate sizes, build marker specifications, and generate standalone PNGs and a multi-page A4 PDF.
+    
+    The function accepts command-line options for corner marker size (--corner-size), drone/pad marker size (--marker-size),
+    output PDF path (--out), and PNG output directory (--png-dir). It validates size constraints required to fit pages on A4;
+    on invalid values it exits with a SystemExit. On success it constructs marker specifications, writes individual PNG files,
+    and produces the printable A4 PDF containing one page per marker.
+    """
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--corner-size", type=float, default=40.0,
