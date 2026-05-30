@@ -113,6 +113,9 @@ def main() -> None:
                         if read_fails >= cfg.safety.max_consecutive_misses:
                             land_now(f"camera stalled for {read_fails} frames -> landing")
                             break
+                    if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+                        land_now("quit requested -> landing")
+                        break
                     continue
                 read_fails = 0
 

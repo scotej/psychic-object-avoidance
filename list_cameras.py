@@ -45,7 +45,7 @@ def main() -> None:
 
     print("-" * 70)
     print(f"Open the PNGs in {out_dir}/ to identify which index is which camera.")
-    print("Then run: python land.py --camera <idx>")
+    print("Then run: python land.py --camera <idx>    (land.py currently uses the DSHOW backend)")
 
 
 if __name__ == "__main__":

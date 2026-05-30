@@ -192,7 +192,7 @@ def draw_page(c: canvas.Canvas, spec: MarkerSpec) -> None:
     c.drawImage(img, marker_x * mm, marker_y * mm,
                 width=spec.size_mm * mm, height=spec.size_mm * mm)
 
-    pad = 2.0
+    pad = max(2.0, spec.size_mm * 0.25)
     c.setLineWidth(0.2)
     c.setStrokeColorRGB(0.65, 0.65, 0.65)
     c.rect((marker_x - pad) * mm, (marker_y - pad) * mm,

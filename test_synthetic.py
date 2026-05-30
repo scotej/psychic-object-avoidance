@@ -21,7 +21,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from poa.config import CORNER_IDS, DRONE_ID, PAD_ID, Config
+from poa.config import ARUCO_DICT_NAME, CORNER_IDS, DRONE_ID, PAD_ID, Config
 from poa.controller import LandingController
 from poa.overlay import build_overlay
 from poa.perception import detect, make_aruco_detector
@@ -37,7 +37,7 @@ def _paste(img: np.ndarray, marker: np.ndarray, center: tuple[int, int]) -> None
 def render_synthetic_frame() -> tuple[np.ndarray, dict]:
     """1280x720 overhead view: 4 corners, drone marker (facing down), pad marker."""
     img = np.full((720, 1280, 3), 240, dtype=np.uint8)
-    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    dictionary = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, ARUCO_DICT_NAME))
 
     corner_centers = {
         CORNER_IDS[0]: (150, 100),    # TL
