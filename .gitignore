@@ -7,7 +7,6 @@ venv/
 
 # Generated artifacts
 _tmp/
-hsv_config.json
 *.log
 
 # OS / editor
