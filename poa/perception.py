@@ -42,6 +42,7 @@ class WorkspaceView:
     rectified: np.ndarray                            # top-down BGR, width_px x height_px
     homography: np.ndarray                           # raw px -> rectified px
     corner_centers: dict[int, tuple[float, float]]   # raw px, for debugging
+    corner_corners: dict[int, np.ndarray]            # raw px (4, 2) per corner marker
 
 
 @dataclass
@@ -125,5 +126,96 @@ def detect(raw_bgr: np.ndarray,
         rectified=rectified,
         homography=H,
         corner_centers={cid: _center(markers[cid]) for cid in CORNER_IDS},
+        corner_corners={cid: markers[cid] for cid in CORNER_IDS},
     )
     return view, det, visible_ids
+
+
+# --- workspace auto-sizing -----------------------------------------------
+
+def _mean_side_px(corners: np.ndarray) -> float:
+    """Mean of a marker's four edge lengths, in pixels."""
+    total = 0.0
+    for i in range(4):
+        total += float(np.hypot(*(corners[(i + 1) % 4] - corners[i])))
+    return total / 4.0
+
+
+def estimate_workspace_size(
+    corner_corners_px: dict[int, np.ndarray],
+    corner_marker_mm: float,
+) -> Optional[tuple[float, float]]:
+    """Estimate workspace width/height in mm (centre-to-centre) from the four
+    corner markers, using each marker's known physical size as a local ruler.
+
+    Each marker gives a local mm-per-pixel scale: its known side length over
+    its measured side length in pixels. For each workspace edge we take the
+    pixel distance between the two marker centres and convert it with the
+    *average* of the two endpoint markers' scales. That trapezoidal averaging
+    is a first-order perspective correction, so the estimate stays good even
+    when an overhead camera makes the far side of a big workspace look smaller
+    than the near side.
+
+    Returns None if any corner marker is missing.
+    """
+    if any(cid not in corner_corners_px for cid in CORNER_IDS):
+        return None
+
+    center = {cid: np.array(_center(corner_corners_px[cid])) for cid in CORNER_IDS}
+    # mm per px, local to each marker.
+    scale = {cid: corner_marker_mm / _mean_side_px(corner_corners_px[cid])
+             for cid in CORNER_IDS}
+
+    tl, tr, br, bl = CORNER_IDS
+
+    def edge_mm(a: int, b: int) -> float:
+        dist_px = float(np.hypot(*(center[b] - center[a])))
+        return dist_px * 0.5 * (scale[a] + scale[b])
+
+    width_mm = 0.5 * (edge_mm(tl, tr) + edge_mm(bl, br))   # top + bottom edges
+    height_mm = 0.5 * (edge_mm(tl, bl) + edge_mm(tr, br))  # left + right edges
+    return width_mm, height_mm
+
+
+class WorkspaceCalibrator:
+    """Accumulates per-frame size estimates and locks in a stable median.
+
+    The corner cards are laid down once and then stay put, so the workspace
+    only needs measuring once. We gather a handful of estimates and take the
+    median (robust to the odd bad frame), then stop. Call reset() to re-measure
+    if the cards are moved.
+    """
+
+    def __init__(self, corner_marker_mm: float, samples: int = 15) -> None:
+        self.corner_marker_mm = corner_marker_mm
+        self.samples = samples
+        self._w: list[float] = []
+        self._h: list[float] = []
+        self.result: Optional[tuple[float, float]] = None
+
+    @property
+    def locked(self) -> bool:
+        return self.result is not None
+
+    @property
+    def count(self) -> int:
+        return len(self._w)
+
+    def reset(self) -> None:
+        self._w.clear()
+        self._h.clear()
+        self.result = None
+
+    def update(self, corner_corners_px: dict[int, np.ndarray]) -> Optional[tuple[float, float]]:
+        """Feed one frame's corner markers. Returns the locked (w, h) once there
+        are enough samples, otherwise None."""
+        if self.locked:
+            return self.result
+        est = estimate_workspace_size(corner_corners_px, self.corner_marker_mm)
+        if est is None:
+            return None
+        self._w.append(est[0])
+        self._h.append(est[1])
+        if len(self._w) >= self.samples:
+            self.result = (float(np.median(self._w)), float(np.median(self._h)))
+        return self.result

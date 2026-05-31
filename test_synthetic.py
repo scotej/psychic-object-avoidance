@@ -24,7 +24,7 @@ import numpy as np
 from poa.config import ARUCO_DICT_NAME, CORNER_IDS, DRONE_ID, PAD_ID, Config
 from poa.controller import LandingController
 from poa.overlay import build_overlay
-from poa.perception import detect, make_aruco_detector
+from poa.perception import detect, estimate_workspace_size, make_aruco_detector
 
 
 def _paste(img: np.ndarray, marker: np.ndarray, center: tuple[int, int]) -> None:
@@ -98,6 +98,19 @@ def main() -> int:
     assert ctrl.error_body_mm[1] > 0, f"expected pad to drone's right, got {ctrl.error_body_mm[1]}"
     assert ctrl.command.pitch > 0, f"expected +pitch, got {ctrl.command.pitch}"
     assert ctrl.command.roll > 0, f"expected +roll, got {ctrl.command.roll}"
+
+    # Auto-sizing: recover the workspace size from the corner markers, treating
+    # their printed size as 40 mm. The synthetic corners sit 980 px apart across
+    # and 520 px down with ~100 px markers, so expect ~392 x 208 mm and, more
+    # robustly, an aspect ratio of 980/520.
+    size = estimate_workspace_size(ws.corner_corners, corner_marker_mm=40.0)
+    assert size is not None, "workspace size estimate failed"
+    w_mm, h_mm = size
+    print(f"[ok] auto-size = ({w_mm:6.1f} x {h_mm:6.1f}) mm   ratio {w_mm / h_mm:.3f}")
+    assert abs(w_mm / h_mm - 980.0 / 520.0) < 0.1, \
+        f"aspect ratio off: {w_mm / h_mm:.3f} vs {980 / 520:.3f}"
+    assert 360.0 < w_mm < 420.0, f"width estimate out of range: {w_mm:.1f} mm"
+    assert 190.0 < h_mm < 230.0, f"height estimate out of range: {h_mm:.1f} mm"
 
     overlay = build_overlay(ws.rectified, det, ctrl, cfg, fps=30.0, state="TRACKING",
                             extras=["synthetic test"])

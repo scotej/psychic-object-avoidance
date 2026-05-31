@@ -31,10 +31,27 @@ PAD_ID = 5    # marker on the floor marking where to land
 
 @dataclass
 class Workspace:
-    """The rectangle bounded by the centres of the four corner markers."""
+    """The rectangle bounded by the centres of the four corner markers.
+
+    With ``auto_size`` on (the default) the centre-to-centre ``width_mm`` and
+    ``height_mm`` are measured at runtime from the corner markers themselves —
+    each marker is a printed square of known size (``corner_marker_mm``), which
+    acts as a ruler in the image. That lets the same printed cards define a
+    workspace of any size, from ~1 m to 3 m or more, without measuring by hand.
+    Until calibration finishes the values below are used as a fallback, and
+    they are also what gets used when ``auto_size`` is off.
+    """
     width_mm: float = 300.0    # centre-to-centre distance, TL -> TR
     height_mm: float = 300.0   # centre-to-centre distance, TL -> BL
     px_per_mm: float = 2.0     # resolution of the rectified top-down image
+
+    # Auto-sizing: measure the workspace from the corner markers' known size.
+    auto_size: bool = True
+    corner_marker_mm: float = 40.0   # printed side length of corner markers 0-3
+    # When auto-sizing, px_per_mm is derived so the larger rectified dimension
+    # lands near this many pixels. This keeps warpPerspective cheap whether the
+    # workspace is 1 m or 3 m across, instead of ballooning to a huge image.
+    target_rectified_px: int = 900
 
     @property
     def width_px(self) -> int:
@@ -43,6 +60,12 @@ class Workspace:
     @property
     def height_px(self) -> int:
         return int(round(self.height_mm * self.px_per_mm))
+
+    def fit_resolution(self) -> None:
+        """Pick px_per_mm so the larger side is ~target_rectified_px pixels."""
+        longest_mm = max(self.width_mm, self.height_mm)
+        if longest_mm > 0:
+            self.px_per_mm = self.target_rectified_px / longest_mm
 
 
 @dataclass
